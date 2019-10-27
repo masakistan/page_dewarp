@@ -29,8 +29,8 @@ REMAP_DECIMATE = 16      # downscaling factor for remapping image
 
 ADAPTIVE_WINSZ = 55      # window size for adaptive threshold in reduced px
 
-TEXT_MIN_WIDTH = 15      # min reduced px width of detected text contour
-TEXT_MIN_HEIGHT = 2      # min reduced px height of detected text contour
+TEXT_MIN_WIDTH = 1      # min reduced px width of detected text contour
+TEXT_MIN_HEIGHT = 200      # min reduced px height of detected text contour
 TEXT_MIN_ASPECT = 1.5    # filter out text contours below this w/h ratio
 TEXT_MAX_THICKNESS = 10  # max reduced px thickness of detected text contour
 
@@ -47,7 +47,7 @@ SPAN_MIN_WIDTH = 30      # minimum reduced px width for span
 SPAN_PX_PER_STEP = 20    # reduced px spacing for sampling along spans
 FOCAL_LENGTH = 1.2       # normalized focal length of camera
 
-DEBUG_LEVEL = 0          # 0=none, 1=some, 2=lots, 3=all
+DEBUG_LEVEL = 3          # 0=none, 1=some, 2=lots, 3=all
 DEBUG_OUTPUT = 'file'    # file, screen, both
 
 WINDOW_NAME = 'Dewarp'   # Window name for visualization
@@ -179,20 +179,24 @@ def get_default_params(corners, ycoords, xcoords):
         [0, 0, 0],
         [page_width, 0, 0],
         [page_width, page_height, 0],
-        [0, page_height, 0]])
+        [0, page_height, 0],
+    ]
+    )
 
     # estimate rotation and translation from four 2D-to-3D point
     # correspondences
     _, rvec, tvec = cv2.solvePnP(corners_object3d,
                                  corners, K, np.zeros(5))
 
-    span_counts = [len(xc) for xc in xcoords]
+    span_counts = [len(xc) for xc in ycoords]
 
-    params = np.hstack((np.array(rvec).flatten(),
-                        np.array(tvec).flatten(),
-                        np.array(cubic_slopes).flatten(),
-                        ycoords.flatten()) +
-                       tuple(xcoords))
+    params = np.hstack(
+        (
+            np.array(rvec).flatten(),
+            np.array(tvec).flatten(),
+            np.array(cubic_slopes).flatten(),
+            xcoords.flatten()) + tuple(ycoords)
+    )
 
     return rough_dims, span_counts, params
 
@@ -226,7 +230,6 @@ def project_xy(xy_coords, pvec):
 
 
 def project_keypoints(pvec, keypoint_index):
-
     xy_coords = pvec[keypoint_index]
     xy_coords[0, :] = 0
 
@@ -312,12 +315,12 @@ def get_mask(name, small, pagemask, masktype):
         if DEBUG_LEVEL >= 3:
             debug_show(name, 0.4, 'thresholded', mask)
 
-        mask = cv2.erode(mask, box(3, 1), iterations=3)
+        mask = cv2.erode(mask, box(1, 3), iterations=3)
 
         if DEBUG_LEVEL >= 3:
             debug_show(name, 0.5, 'eroded', mask)
 
-        mask = cv2.dilate(mask, box(8, 2))
+        mask = cv2.dilate(mask, box(2, 8))
 
         if DEBUG_LEVEL >= 3:
             debug_show(name, 0.6, 'dilated', mask)
@@ -446,9 +449,10 @@ def get_contours(name, small, pagemask, masktype):
 
     mask = get_mask(name, small, pagemask, masktype)
 
-    _, contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
                                       cv2.CHAIN_APPROX_NONE)
 
+    all_contours = []
     contours_out = []
 
     for contour in contours:
@@ -456,20 +460,24 @@ def get_contours(name, small, pagemask, masktype):
         rect = cv2.boundingRect(contour)
         xmin, ymin, width, height = rect
 
+
         if (width < TEXT_MIN_WIDTH or
-                height < TEXT_MIN_HEIGHT or
-                width < TEXT_MIN_ASPECT*height):
+                height < TEXT_MIN_HEIGHT
+            #or width < TEXT_MIN_ASPECT*height
+        ):
             continue
 
         tight_mask = make_tight_mask(contour, xmin, ymin, width, height)
+        #all_contours.append(ContourInfo(contour, rect, tight_mask))
 
-        if tight_mask.sum(axis=0).max() > TEXT_MAX_THICKNESS:
-            continue
+        #if tight_mask.sum(axis=0).max() > TEXT_MAX_THICKNESS:
+        #    continue
 
         contours_out.append(ContourInfo(contour, rect, tight_mask))
 
     if DEBUG_LEVEL >= 2:
         visualize_contours(name, small, contours_out)
+        #visualize_contours('all_contours', small, all_contours)
 
     return contours_out
 
@@ -490,7 +498,7 @@ def assemble_spans(name, small, pagemask, cinfo_list):
                 candidate_edges.append(edge)
 
     # sort candidate edges by score (lower is better)
-    candidate_edges.sort()
+    candidate_edges.sort(key=lambda x: x[0])
 
     # for each candidate edge
     for _, cinfo_a, cinfo_b in candidate_edges:
@@ -548,15 +556,15 @@ def sample_spans(shape, spans):
         for cinfo in span:
 
             yvals = np.arange(cinfo.mask.shape[0]).reshape((-1, 1))
-            totals = (yvals * cinfo.mask).sum(axis=0)
-            means = totals / cinfo.mask.sum(axis=0)
+            totals = (yvals * cinfo.mask).sum(axis=1)
+            means = totals / cinfo.mask.sum(axis=1)
 
             xmin, ymin = cinfo.rect[:2]
 
             step = SPAN_PX_PER_STEP
-            start = ((len(means)-1) % step) / 2
+            start = ((len(means)-1) % step) // 2
 
-            contour_points += [(x+xmin, means[x]+ymin)
+            contour_points += [(xmin, means[x]+ymin)
                                for x in range(start, len(means), step)]
 
         contour_points = np.array(contour_points,
@@ -585,14 +593,17 @@ def keypoints_from_samples(name, small, pagemask, page_outline,
         all_evecs += evec * weight
         all_weights += weight
 
+    #print(all_evecs)
     evec = all_evecs / all_weights
 
-    x_dir = evec.flatten()
+    y_dir = evec.flatten()
 
-    if x_dir[0] < 0:
-        x_dir = -x_dir
+    #if y_dir[0] < 0:
+    #    print('negate y dir')
+    #    y_dir = -y_dir
 
-    y_dir = np.array([-x_dir[1], x_dir[0]])
+    x_dir = np.array([y_dir[1], y_dir[0]])
+    print('dirs:', x_dir, y_dir)
 
     pagecoords = cv2.convexHull(page_outline)
     pagecoords = pix2norm(pagemask.shape, pagecoords.reshape((-1, 1, 2)))
@@ -618,16 +629,17 @@ def keypoints_from_samples(name, small, pagemask, page_outline,
     xcoords = []
 
     for points in span_points:
+        #print('points', points)
         pts = points.reshape((-1, 2))
         px_coords = np.dot(pts, x_dir)
         py_coords = np.dot(pts, y_dir)
-        ycoords.append(py_coords.mean() - py0)
-        xcoords.append(px_coords - px0)
+        xcoords.append(px_coords.mean() - px0)
+        ycoords.append(py_coords - py0)
 
     if DEBUG_LEVEL >= 2:
         visualize_span_points(name, small, span_points, corners)
 
-    return corners, np.array(ycoords), xcoords
+    return corners, ycoords, np.array(xcoords)
 
 
 def visualize_contours(name, small, cinfo_list):
@@ -670,7 +682,7 @@ def visualize_spans(name, small, pagemask, spans):
 
     display = small.copy()
     display[mask] = (display[mask]/2) + (regions[mask]/2)
-    display[pagemask == 0] /= 4
+    #display[pagemask == 0] /= 4
 
     debug_show(name, 2, 'spans', display)
 
@@ -720,10 +732,10 @@ def make_keypoint_index(span_counts):
 
     for i, count in enumerate(span_counts):
         end = start + count
-        keypoint_index[start:start+end, 1] = 8+i
+        keypoint_index[start:start+end, 0] = 8+i
         start = end
 
-    keypoint_index[1:, 0] = np.arange(npts) + 8 + nspans
+    keypoint_index[1:, 1] = np.arange(npts) + 8 + nspans
 
     return keypoint_index
 
@@ -734,22 +746,23 @@ def optimize_params(name, small, dstpoints, span_counts, params):
 
     def objective(pvec):
         ppts = project_keypoints(pvec, keypoint_index)
+        #print('ppts', ppts)
         return np.sum((dstpoints - ppts)**2)
 
-    print '  initial objective is', objective(params)
+    print('  initial objective is', objective(params))
 
     if DEBUG_LEVEL >= 1:
         projpts = project_keypoints(params, keypoint_index)
         display = draw_correspondences(small, dstpoints, projpts)
         debug_show(name, 4, 'keypoints before', display)
 
-    print '  optimizing', len(params), 'parameters...'
+    print('  optimizing', len(params), 'parameters...')
     start = datetime.datetime.now()
     res = scipy.optimize.minimize(objective, params,
                                   method='Powell')
     end = datetime.datetime.now()
-    print '  optimization took', round((end-start).total_seconds(), 2), 'sec.'
-    print '  final objective is', res.fun
+    print('  optimization took', round((end-start).total_seconds(), 2), 'sec.')
+    print('  final objective is', res.fun)
     params = res.x
 
     if DEBUG_LEVEL >= 1:
@@ -761,19 +774,19 @@ def optimize_params(name, small, dstpoints, span_counts, params):
 
 
 def get_page_dims(corners, rough_dims, params):
-
     dst_br = corners[2].flatten()
 
     dims = np.array(rough_dims)
 
     def objective(dims):
         proj_br = project_xy(dims, params)
+        #print(proj_br)
         return np.sum((dst_br - proj_br.flatten())**2)
 
     res = scipy.optimize.minimize(objective, dims, method='Powell')
     dims = res.x
 
-    print '  got page dims', dims[0], 'x', dims[1]
+    print('  got page dims', dims[0], 'x', dims[1])
 
     return dims
 
@@ -786,7 +799,7 @@ def remap_image(name, img, small, page_dims, params):
     width = round_nearest_multiple(height * page_dims[0] / page_dims[1],
                                    REMAP_DECIMATE)
 
-    print '  output will be {}x{}'.format(width, height)
+    print('  output will be {}x{}'.format(width, height))
 
     height_small = height / REMAP_DECIMATE
     width_small = width / REMAP_DECIMATE
@@ -838,10 +851,44 @@ def remap_image(name, img, small, page_dims, params):
     return threshfile
 
 
+def get_lines(hough_lines):
+    lines = []
+    for r, theta in hough_lines[0]:
+        # Stores the value of cos(theta) in a 
+        a = np.cos(theta) 
+
+        # Stores the value of sin(theta) in b 
+        b = np.sin(theta) 
+
+        # x0 stores the value rcos(theta) 
+        x0 = a*r 
+
+        # y0 stores the value rsin(theta) 
+        y0 = b*r 
+
+        # x1 stores the rounded off value of (rcos(theta)-1000sin(theta)) 
+        x1 = int(x0 + 1000*(-b)) 
+
+        # y1 stores the rounded off value of (rsin(theta)+1000cos(theta)) 
+        y1 = int(y0 + 1000*(a)) 
+
+        # x2 stores the rounded off value of (rcos(theta)+1000sin(theta)) 
+        x2 = int(x0 - 1000*(-b)) 
+
+        # y2 stores the rounded off value of (rsin(theta)-1000cos(theta)) 
+        y2 = int(y0 - 1000*(a)) 
+
+        # cv2.line draws a line in img from the point(x1,y1) to (x2,y2). 
+        # (0,0,255) denotes the colour of the line to be  
+        #drawn. In this case, it is red.  
+        lines.append(((x1, y1), (x2, y2)))
+    return lines
+
+
 def main():
 
     if len(sys.argv) < 2:
-        print 'usage:', sys.argv[0], 'IMAGE1 [IMAGE2 ...]'
+        print('usage:', sys.argv[0], 'IMAGE1 [IMAGE2 ...]')
         sys.exit(0)
 
     if DEBUG_LEVEL > 0 and DEBUG_OUTPUT != 'file':
@@ -856,43 +903,52 @@ def main():
         basename = os.path.basename(imgfile)
         name, _ = os.path.splitext(basename)
 
-        print 'loaded', basename, 'with size', imgsize(img),
-        print 'and resized to', imgsize(small)
+        print('loaded', basename, 'with size', imgsize(img),)
+        print('and resized to', imgsize(small))
 
         if DEBUG_LEVEL >= 3:
             debug_show(name, 0.0, 'original', small)
 
         pagemask, page_outline = get_page_extents(small)
+        #cv2.imwrite('mask.jpg', pagemask)
+        #cv2.imwrite('outline.jpg', page_outline)
 
-        cinfo_list = get_contours(name, small, pagemask, 'text')
+        cinfo_list = get_contours(name, small, pagemask, 'line')
+
         spans = assemble_spans(name, small, pagemask, cinfo_list)
 
         if len(spans) < 3:
-            print '  detecting lines because only', len(spans), 'text spans'
+            print('  detecting lines because only', len(spans), 'text spans')
             cinfo_list = get_contours(name, small, pagemask, 'line')
             spans2 = assemble_spans(name, small, pagemask, cinfo_list)
             if len(spans2) > len(spans):
                 spans = spans2
 
         if len(spans) < 1:
-            print 'skipping', name, 'because only', len(spans), 'spans'
+            print('skipping', name, 'because only', len(spans), 'spans')
             continue
 
         span_points = sample_spans(small.shape, spans)
+        #print(span_points[0])
 
-        print '  got', len(spans), 'spans',
-        print 'with', sum([len(pts) for pts in span_points]), 'points.'
+        print('  got', len(spans), 'spans',)
+        print('with', sum([len(pts) for pts in span_points]), 'points.')
 
         corners, ycoords, xcoords = keypoints_from_samples(name, small,
                                                            pagemask,
                                                            page_outline,
                                                            span_points)
 
+
+        #print('x', xcoords)
+        #print('y', ycoords)
+        
         rough_dims, span_counts, params = get_default_params(corners,
                                                              ycoords, xcoords)
 
         dstpoints = np.vstack((corners[0].reshape((1, 1, 2)),) +
                               tuple(span_points))
+        #print('dst', dstpoints)
 
         params = optimize_params(name, small,
                                  dstpoints,
@@ -904,11 +960,11 @@ def main():
 
         outfiles.append(outfile)
 
-        print '  wrote', outfile
+        print('  wrote', outfile)
         print
 
-    print 'to convert to PDF (requires ImageMagick):'
-    print '  convert -compress Group4 ' + ' '.join(outfiles) + ' output.pdf'
+    print('to convert to PDF (requires ImageMagick):')
+    print('  convert -compress Group4 ' + ' '.join(outfiles) + ' output.pdf')
 
 
 if __name__ == '__main__':
