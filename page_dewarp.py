@@ -317,7 +317,6 @@ def get_mask(name, small, masktype):
     crop_mask = mask
     crop_mask = cv2.erode(crop_mask, box(2, 2), iterations=5)
     crop_mask = cv2.dilate(crop_mask, box(8, 8))
-    debug_show(name, 0.5, 'eroded11', crop_mask)
 
     vvals = np.sum(crop_mask, axis=1)
     #xs = [i for i in range(len(vvals))]
@@ -898,12 +897,13 @@ def remap_image(name, img, small, page_dims, params):
 
     img_gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
 
-    remapped = cv2.remap(img_gray, image_x_coords, image_y_coords,
+    remapped = cv2.remap(img, image_x_coords, image_y_coords,
                          cv2.INTER_CUBIC,
                          None, cv2.BORDER_REPLICATE)
 
-    thresh = cv2.adaptiveThreshold(remapped, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
-                                   cv2.THRESH_BINARY, ADAPTIVE_WINSZ, 25)
+    #thresh = cv2.adaptiveThreshold(remapped, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
+    #                               cv2.THRESH_BINARY, ADAPTIVE_WINSZ, 25)
+    thresh = remapped
 
     height, width = thresh.shape[:2]
     ymin = TOP_REMOVE
@@ -912,11 +912,12 @@ def remap_image(name, img, small, page_dims, params):
     xmax = width - RIGHT_REMOVE
     thresh = thresh[ymin:ymax, xmin:xmax]
 
-    pil_image = Image.fromarray(thresh)
-    pil_image = pil_image.convert('1')
+    #pil_image = Image.fromarray(thresh)
+    #pil_image = pil_image.convert('1')
 
-    threshfile = name + '_thresh.png'
-    pil_image.save(threshfile, dpi=(OUTPUT_DPI, OUTPUT_DPI))
+    threshfile = name + '_thresh.jpg'
+    cv2.imwrite(threshfile, thresh)
+    #pil_image.save(threshfile, dpi=(OUTPUT_DPI, OUTPUT_DPI))
 
     if DEBUG_LEVEL >= 1:
         height = small.shape[0]
