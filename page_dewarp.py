@@ -55,7 +55,7 @@ SPAN_MIN_WIDTH = 30      # minimum reduced px width for span
 SPAN_PX_PER_STEP = 20    # reduced px spacing for sampling along spans
 FOCAL_LENGTH = 1.2       # normalized focal length of camera
 
-DEBUG_LEVEL = 3          # 0=none, 1=some, 2=lots, 3=all
+DEBUG_LEVEL = 0          # 0=none, 1=some, 2=lots, 3=all
 DEBUG_OUTPUT = 'file'    # file, screen, both
 
 WINDOW_NAME = 'Dewarp'   # Window name for visualization
@@ -334,9 +334,14 @@ def get_mask(name, small, masktype):
 
     rle_top = rle(boundaries_top)
     rle_bottom = rle(boundaries_bottom)
+    #print(rle_top, rle_bottom)
 
     top = rle_top[1][-1]
-    bottom = rle_bottom[1][1] + len(vvals) // 2
+
+    if len(rle_bottom[1]) < 2:
+        bottom = len(vvals)
+    else:
+        bottom = rle_bottom[1][1] + len(vvals) // 2
     #print(rle_top, rle_bottom)
     #print(top, bottom)
 
@@ -359,7 +364,11 @@ def get_mask(name, small, masktype):
     rle_right = rle(boundaries_right)
 
     left = rle_left[1][-1]
-    right = rle_right[1][1] + len(hvals) // 2
+
+    if len(rle_right[1]) < 2:
+        right = len(hvals)
+    else:
+        right = rle_right[1][1] + len(hvals) // 2
 
     # NOTE: create page mask
     pagemask, page_outline = get_page_extents(small, (top, bottom, left, right))
@@ -666,7 +675,7 @@ def keypoints_from_samples(name, small, pagemask, page_outline,
     #print('dirs:', x_dir, y_dir)
 
     pagecoords = cv2.convexHull(page_outline)
-    print('pagecoords', pagecoords)
+    #print('pagecoords', pagecoords)
     pagecoords = pix2norm(pagemask.shape, pagecoords.reshape((-1, 1, 2)))
     pagecoords = pagecoords.reshape((-1, 2))
 
@@ -982,11 +991,12 @@ def main():
         spans = assemble_spans(name, small, pagemask, cinfo_list)
 
         if len(spans) < 3:
-            print('  detecting lines because only', len(spans), 'text spans')
-            cinfo_list = get_contours(name, small, pagemask, 'line')
-            spans2 = assemble_spans(name, small, pagemask, cinfo_list)
-            if len(spans2) > len(spans):
-                spans = spans2
+            print('  not enough spans, giving up on this image')
+            continue
+            #cinfo_list = get_contours(name, small, pagemask, 'line')
+            #spans2 = assemble_spans(name, small, pagemask, cinfo_list)
+            #if len(spans2) > len(spans):
+            #    spans = spans2
 
         if len(spans) < 1:
             print('skipping', name, 'because only', len(spans), 'spans')
@@ -1003,7 +1013,7 @@ def main():
                                                            page_outline,
                                                            span_points)
 
-        print('corners:', corners)
+        #print('corners:', corners)
 
         #print( xcoords)
         #print('y', ycoords)
