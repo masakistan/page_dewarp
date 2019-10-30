@@ -16,21 +16,29 @@ import cv2
 from PIL import Image
 import numpy as np
 import scipy.optimize
+import matplotlib.pyplot as plt
 
 # for some reason pylint complains about cv2 members being undefined :(
 # pylint: disable=E1101
 
-PAGE_MARGIN_X = 50       # reduced px to ignore near L/R edge
-PAGE_MARGIN_Y = 20       # reduced px to ignore near T/B edge
+PAGE_MARGIN_X = 0       # reduced px to ignore near L/R edge
+PAGE_MARGIN_Y = 0       # reduced px to ignore near T/B edge
+
+# NOTE: remove fixed amount from top, bottom, left right
+TOP_REMOVE = 250
+BOTTOM_REMOVE = 110
+LEFT_REMOVE = 70
+RIGHT_REMOVE = 130
 
 OUTPUT_ZOOM = 1.0        # how much to zoom output relative to *original* image
 OUTPUT_DPI = 300         # just affects stated DPI of PNG, not appearance
 REMAP_DECIMATE = 16      # downscaling factor for remapping image
 
-ADAPTIVE_WINSZ = 55      # window size for adaptive threshold in reduced px
+ADAPTIVE_WINSZ = 155      # window size for adaptive threshold in reduced px
 
+TEXT_MAX_WIDTH = 20
 TEXT_MIN_WIDTH = 1      # min reduced px width of detected text contour
-TEXT_MIN_HEIGHT = 200      # min reduced px height of detected text contour
+TEXT_MIN_HEIGHT = 100      # min reduced px height of detected text contour
 TEXT_MIN_ASPECT = 1.5    # filter out text contours below this w/h ratio
 TEXT_MAX_THICKNESS = 10  # max reduced px thickness of detected text contour
 
@@ -51,6 +59,8 @@ DEBUG_LEVEL = 3          # 0=none, 1=some, 2=lots, 3=all
 DEBUG_OUTPUT = 'file'    # file, screen, both
 
 WINDOW_NAME = 'Dewarp'   # Window name for visualization
+
+EDGE_THRESHOLD = 100000  # Threshold needed for identifying edges on census pages
 
 # nice color palette for visualizing contours, etc.
 CCOLORS = [
@@ -260,14 +270,10 @@ def box(width, height):
     return np.ones((height, width), dtype=np.uint8)
 
 
-def get_page_extents(small):
-
+def get_page_extents(small, edges):
     height, width = small.shape[:2]
 
-    xmin = PAGE_MARGIN_X
-    ymin = PAGE_MARGIN_Y
-    xmax = width-PAGE_MARGIN_X
-    ymax = height-PAGE_MARGIN_Y
+    ymax, ymin, xmin, xmax = edges
 
     page = np.zeros((height, width), dtype=np.uint8)
     cv2.rectangle(page, (xmin, ymin), (xmax, ymax), (255, 255, 255), -1)
@@ -281,51 +287,96 @@ def get_page_extents(small):
     return page, outline
 
 
-def get_mask(name, small, pagemask, masktype):
+def rle(inarray):
+    """ run length encoding. Partial credit to R rle function. 
+        Multi datatype arrays catered for including non Numpy
+        returns: tuple (runlengths, startpositions, values) """
+    ia = np.asarray(inarray)                  # force numpy
+    n = len(ia)
+    if n == 0: 
+        return (None, None, None)
+    else:
+        y = np.array(ia[1:] != ia[:-1])     # pairwise unequal (string safe)
+        i = np.append(np.where(y), n - 1)   # must include last element posi
+        z = np.diff(np.append(-1, i))       # run lengths
+        p = np.cumsum(np.append(0, z))[:-1] # positions
+        return(z, p, ia[i])
+
+
+def get_mask(name, small, masktype):
 
     sgray = cv2.cvtColor(small, cv2.COLOR_RGB2GRAY)
+    mask = cv2.adaptiveThreshold(sgray, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
+                                    cv2.THRESH_BINARY_INV,
+                                    ADAPTIVE_WINSZ,
+                                    7)
 
-    if masktype == 'text':
+    if DEBUG_LEVEL >= 3:
+        debug_show(name, 0.4, 'thresholded', mask)
 
-        mask = cv2.adaptiveThreshold(sgray, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
-                                     cv2.THRESH_BINARY_INV,
-                                     ADAPTIVE_WINSZ,
-                                     25)
+    crop_mask = mask
+    crop_mask = cv2.erode(crop_mask, box(2, 2), iterations=5)
+    crop_mask = cv2.dilate(crop_mask, box(8, 8))
+    debug_show(name, 0.5, 'eroded11', crop_mask)
 
-        if DEBUG_LEVEL >= 3:
-            debug_show(name, 0.1, 'thresholded', mask)
+    vvals = np.sum(crop_mask, axis=1)
+    #xs = [i for i in range(len(vvals))]
+    #plt.figure(figsize=(15,5))
+    #plt.plot(xs, vvals)
+    #plt.scatter(xs, vvals, s=0)
+    #plt.savefig('vals_v.jpg')
+    #plt.clf()
 
-        mask = cv2.dilate(mask, box(9, 1))
+    top = vvals[:len(vvals) // 2]
+    bottom = vvals[len(vvals) // 2:]
+    boundaries_top = top > EDGE_THRESHOLD
+    boundaries_bottom = bottom > EDGE_THRESHOLD
 
-        if DEBUG_LEVEL >= 3:
-            debug_show(name, 0.2, 'dilated', mask)
+    rle_top = rle(boundaries_top)
+    rle_bottom = rle(boundaries_bottom)
 
-        mask = cv2.erode(mask, box(1, 3))
+    top = rle_top[1][-1]
+    bottom = rle_bottom[1][1] + len(vvals) // 2
+    #print(rle_top, rle_bottom)
+    #print(top, bottom)
 
-        if DEBUG_LEVEL >= 3:
-            debug_show(name, 0.3, 'eroded', mask)
 
-    else:
+    hvals = np.sum(crop_mask, axis=0)
+    #xs = [i for i in range(len(hvals))]
+    #plt.figure(figsize=(15,5))
+    #plt.plot(xs, hvals)
+    #plt.scatter(xs, hvals, s=0)
+    #plt.savefig('vals_h.jpg')
+    #plt.clf()
 
-        mask = cv2.adaptiveThreshold(sgray, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
-                                     cv2.THRESH_BINARY_INV,
-                                     ADAPTIVE_WINSZ,
-                                     7)
+    left = hvals[:len(hvals) // 2]
+    right = hvals[len(hvals) // 2:]
 
-        if DEBUG_LEVEL >= 3:
-            debug_show(name, 0.4, 'thresholded', mask)
+    boundaries_left = left > EDGE_THRESHOLD
+    boundaries_right = right > EDGE_THRESHOLD
 
-        mask = cv2.erode(mask, box(1, 3), iterations=3)
+    rle_left = rle(boundaries_left)
+    rle_right = rle(boundaries_right)
 
-        if DEBUG_LEVEL >= 3:
-            debug_show(name, 0.5, 'eroded', mask)
+    left = rle_left[1][-1]
+    right = rle_right[1][1] + len(hvals) // 2
 
-        mask = cv2.dilate(mask, box(2, 8))
+    # NOTE: create page mask
+    pagemask, page_outline = get_page_extents(small, (top, bottom, left, right))
 
-        if DEBUG_LEVEL >= 3:
-            debug_show(name, 0.6, 'dilated', mask)
+    #print(top, bottom, left, right)
 
-    return np.minimum(mask, pagemask)
+    mask = cv2.erode(mask, box(1, 3), iterations=3)
+
+    if DEBUG_LEVEL >= 3:
+        debug_show(name, 0.5, 'eroded', mask)
+
+    mask = cv2.dilate(mask, box(2, 8))
+
+    if DEBUG_LEVEL >= 3:
+        debug_show(name, 0.6, 'dilated', mask)
+
+    return np.minimum(mask, pagemask), pagemask, page_outline
 
 
 def interval_measure_overlap(int_a, int_b):
@@ -350,9 +401,17 @@ def blob_mean_and_tangent(contour):
     moments = cv2.moments(contour)
 
     area = moments['m00']
+    #print('area', area)
+    #print(contour)
+    #print(moments['m10'])
+    #print(moments['m01'])
 
-    mean_x = moments['m10'] / area
-    mean_y = moments['m01'] / area
+    if area < 0.00001:
+        mean_x = 0
+        mean_y = 0
+    else:
+        mean_x = moments['m10'] / area
+        mean_y = moments['m01'] / area
 
     moments_matrix = np.array([
         [moments['mu20'], moments['mu11']],
@@ -445,9 +504,9 @@ def make_tight_mask(contour, xmin, ymin, width, height):
     return tight_mask
 
 
-def get_contours(name, small, pagemask, masktype):
+def get_contours(name, small, masktype):
 
-    mask = get_mask(name, small, pagemask, masktype)
+    mask, pagemask, page_outline = get_mask(name, small, masktype)
 
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
                                       cv2.CHAIN_APPROX_NONE)
@@ -459,16 +518,17 @@ def get_contours(name, small, pagemask, masktype):
 
         rect = cv2.boundingRect(contour)
         xmin, ymin, width, height = rect
+        #print('rect', rect)
 
 
-        if (width < TEXT_MIN_WIDTH or
-                height < TEXT_MIN_HEIGHT
+        if (width < TEXT_MIN_WIDTH
+            or height < TEXT_MIN_HEIGHT
+            or width > TEXT_MAX_WIDTH
             #or width < TEXT_MIN_ASPECT*height
         ):
             continue
 
         tight_mask = make_tight_mask(contour, xmin, ymin, width, height)
-        #all_contours.append(ContourInfo(contour, rect, tight_mask))
 
         #if tight_mask.sum(axis=0).max() > TEXT_MAX_THICKNESS:
         #    continue
@@ -479,7 +539,7 @@ def get_contours(name, small, pagemask, masktype):
         visualize_contours(name, small, contours_out)
         #visualize_contours('all_contours', small, all_contours)
 
-    return contours_out
+    return contours_out, pagemask, page_outline
 
 
 def assemble_spans(name, small, pagemask, cinfo_list):
@@ -603,9 +663,10 @@ def keypoints_from_samples(name, small, pagemask, page_outline,
     #    y_dir = -y_dir
 
     x_dir = np.array([y_dir[1], y_dir[0]])
-    print('dirs:', x_dir, y_dir)
+    #print('dirs:', x_dir, y_dir)
 
     pagecoords = cv2.convexHull(page_outline)
+    print('pagecoords', pagecoords)
     pagecoords = pix2norm(pagemask.shape, pagecoords.reshape((-1, 1, 2)))
     pagecoords = pagecoords.reshape((-1, 2))
 
@@ -835,6 +896,13 @@ def remap_image(name, img, small, page_dims, params):
     thresh = cv2.adaptiveThreshold(remapped, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
                                    cv2.THRESH_BINARY, ADAPTIVE_WINSZ, 25)
 
+    height, width = thresh.shape[:2]
+    ymin = TOP_REMOVE
+    ymax = height - BOTTOM_REMOVE
+    xmin = LEFT_REMOVE
+    xmax = width - RIGHT_REMOVE
+    thresh = thresh[ymin:ymax, xmin:xmax]
+
     pil_image = Image.fromarray(thresh)
     pil_image = pil_image.convert('1')
 
@@ -909,11 +977,7 @@ def main():
         if DEBUG_LEVEL >= 3:
             debug_show(name, 0.0, 'original', small)
 
-        pagemask, page_outline = get_page_extents(small)
-        #cv2.imwrite('mask.jpg', pagemask)
-        #cv2.imwrite('outline.jpg', page_outline)
-
-        cinfo_list = get_contours(name, small, pagemask, 'line')
+        cinfo_list, pagemask, page_outline = get_contours(name, small, 'line')
 
         spans = assemble_spans(name, small, pagemask, cinfo_list)
 
@@ -939,8 +1003,9 @@ def main():
                                                            page_outline,
                                                            span_points)
 
+        print('corners:', corners)
 
-        #print('x', xcoords)
+        #print( xcoords)
         #print('y', ycoords)
         
         rough_dims, span_counts, params = get_default_params(corners,
@@ -957,7 +1022,6 @@ def main():
         page_dims = get_page_dims(corners, rough_dims, params)
 
         outfile = remap_image(name, img, small, page_dims, params)
-
         outfiles.append(outfile)
 
         print('  wrote', outfile)
