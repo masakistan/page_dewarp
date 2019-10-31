@@ -38,7 +38,7 @@ ADAPTIVE_WINSZ = 155      # window size for adaptive threshold in reduced px
 
 TEXT_MAX_WIDTH = 20
 TEXT_MIN_WIDTH = 1      # min reduced px width of detected text contour
-TEXT_MIN_HEIGHT = 100      # min reduced px height of detected text contour
+TEXT_MIN_HEIGHT = 400      # min reduced px height of detected text contour
 TEXT_MIN_ASPECT = 1.5    # filter out text contours below this w/h ratio
 TEXT_MAX_THICKNESS = 10  # max reduced px thickness of detected text contour
 
@@ -368,6 +368,10 @@ def get_mask(name, small, masktype):
         right = len(hvals)
     else:
         right = rle_right[1][1] + len(hvals) // 2
+
+    #print(left)
+    #print(small.shape)
+    #sys.exit()
 
     # NOTE: create page mask
     pagemask, page_outline = get_page_extents(small, (top, bottom, left, right))
